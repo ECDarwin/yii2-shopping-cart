@@ -2,9 +2,11 @@
 
 namespace yz\shoppingcart;
 
+use Yii;
 use yii\base\Component;
 use yii\base\Event;
-use Yii;
+use yii\di\Instance;
+use yii\web\Session;
 
 
 /**
@@ -15,6 +17,7 @@ use Yii;
  * @property bool $isEmpty Returns true if cart is empty
  * @property string $hash Returns hash (md5) of the current cart, that is uniq to the current combination
  * of positions, quantities and costs
+ * @property string $serialized Get/set serialized content of the cart
  * @package \yz\shoppingcart
  */
 class ShoppingCart extends Component
@@ -31,14 +34,21 @@ class ShoppingCart extends Component
     const EVENT_COST_CALCULATION = 'costCalculation';
 
     /**
+     * If true (default) cart will be automatically stored in and loaded from session.
+     * If false - you should do this manually with saveToSession and loadFromSession methods
+     * @var bool
+     */
+    public $storeInSession = true;
+    /**
+     * Session component
+     * @var string|Session
+     */
+    public $session = 'session';
+    /**
      * Shopping cart ID to support multiple carts
      * @var string
      */
     public $cartId = __CLASS__;
-    /**
-     * @var array
-     */
-    public $discounts = [];
     /**
      * @var CartPositionInterface[]
      */
@@ -46,7 +56,36 @@ class ShoppingCart extends Component
 
     public function init()
     {
-        $this->loadFromSession();
+        if ($this->storeInSession)
+            $this->loadFromSession();
+    }
+
+    /**
+     * Loads cart from session
+     */
+    public function loadFromSession()
+    {
+        $this->session = Instance::ensure($this->session, Session::className());
+        if (isset($this->session[$this->cartId]))
+            $this->setSerialized($this->session[$this->cartId]);
+    }
+
+    /**
+     * Saves cart to the session
+     */
+    public function saveToSession()
+    {
+        $this->session = Instance::ensure($this->session, Session::className());
+        $this->session[$this->cartId] = $this->getSerialized();
+    }
+
+    /**
+     * Sets cart from serialized string
+     * @param string $serialized
+     */
+    public function setSerialized($serialized)
+    {
+        $this->_positions = unserialize($serialized);
     }
 
     /**
@@ -68,7 +107,17 @@ class ShoppingCart extends Component
         $this->trigger(self::EVENT_CART_CHANGE, new Event([
             'data' => ['action' => 'put', 'position' => $this->_positions[$position->getId()]],
         ]));
-        $this->saveToSession();
+        if ($this->storeInSession)
+            $this->saveToSession();
+    }
+
+    /**
+     * Returns cart positions as serialized items
+     * @return string
+     */
+    public function getSerialized()
+    {
+        return serialize($this->_positions);
     }
 
     /**
@@ -94,7 +143,8 @@ class ShoppingCart extends Component
         $this->trigger(self::EVENT_CART_CHANGE, new Event([
             'data' => ['action' => 'update', 'position' => $this->_positions[$position->getId()]],
         ]));
-        $this->saveToSession();
+        if ($this->storeInSession)
+            $this->saveToSession();
     }
 
     /**
@@ -103,14 +153,24 @@ class ShoppingCart extends Component
      */
     public function remove($position)
     {
+        $this->removeById($position->id);
+    }
+
+    /**
+     * Removes position from the cart by ID
+     * @param string $id
+     */
+    public function removeById($id)
+    {
         $this->trigger(self::EVENT_BEFORE_POSITION_REMOVE, new Event([
-            'data' => $this->_positions[$position->getId()],
+            'data' => $this->_positions[$id],
         ]));
         $this->trigger(self::EVENT_CART_CHANGE, new Event([
-            'data' => ['action' => 'remove', 'position' => $this->_positions[$position->getId()]],
+            'data' => ['action' => 'remove', 'position' => $this->_positions[$id]],
         ]));
-        unset($this->_positions[$position->getId()]);
-        $this->saveToSession();
+        unset($this->_positions[$id]);
+        if ($this->storeInSession)
+            $this->saveToSession();
     }
 
     /**
@@ -122,7 +182,8 @@ class ShoppingCart extends Component
         $this->trigger(self::EVENT_CART_CHANGE, new Event([
             'data' => ['action' => 'removeAll'],
         ]));
-        $this->saveToSession();
+        if ($this->storeInSession)
+            $this->saveToSession();
     }
 
     /**
@@ -165,7 +226,8 @@ class ShoppingCart extends Component
         $this->trigger(self::EVENT_CART_CHANGE, new Event([
             'data' => ['action' => 'positions'],
         ]));
-        $this->saveToSession();
+        if ($this->storeInSession)
+            $this->saveToSession();
     }
 
     /**
@@ -204,7 +266,7 @@ class ShoppingCart extends Component
         ]);
         $this->trigger(self::EVENT_COST_CALCULATION, $costEvent);
         if ($withDiscount)
-            $cost -= $costEvent->discountValue;
+            $cost = max(0, $cost - $costEvent->discountValue);
         return $cost;
     }
 
@@ -223,14 +285,5 @@ class ShoppingCart extends Component
         return md5(serialize($data));
     }
 
-    protected function saveToSession()
-    {
-        Yii::$app->session[$this->cartId] = serialize($this->_positions);
-    }
 
-    protected function loadFromSession()
-    {
-        if (isset(Yii::$app->session[$this->cartId]))
-            $this->_positions = unserialize(Yii::$app->session[$this->cartId]);
-    }
 }
